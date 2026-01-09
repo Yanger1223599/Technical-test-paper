@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>電商購物中心｜首頁</title>
+
+  <!-- Bootstrap & Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+
+  <!-- 共用 CSS -->
+  <link rel="stylesheet" href="styles.css">
+
+  <style>
+    .product-card { border-radius:12px; border:1px solid #eee; padding:16px; }
+    .product-card img { max-width:100%; border-radius:8px; }
+    .cart-summary { border:1px solid #ddd; border-radius:12px; padding:16px; }
+  </style>
+</head>
+<body>
+
+<div id="app" class="container py-4">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h3>歡迎, {{ user.username }}</h3>
+    <button class="btn btn-outline-danger" @click="logout">登出</button>
+  </div>
+
+  <div class="row">
+    <!-- 商品列表 -->
+    <div class="col-md-8">
+      <h5>商品列表</h5>
+      <div class="row">
+        <div class="col-md-6 mb-3" v-for="p in products" :key="p.productId">
+          <div class="product-card">
+            <h6>{{ p.productName }}</h6>
+            <p>售價: ${{ p.price }} 庫存: {{ p.quantity }}</p>
+            <input type="number" min="1" :max="p.quantity" class="form-control mb-2"
+                   v-model.number="p.buyQty" placeholder="購買數量" />
+            <button class="btn btn-success w-100"
+                    @click="addToCart(p)"
+                    :disabled="!p.buyQty || p.buyQty>p.quantity">
+              加入購物車
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 購物車 -->
+    <div class="col-md-4">
+      <h5>購物車</h5>
+      <div class="cart-summary">
+        <div v-if="cart.length===0">購物車空空如也</div>
+        <ul class="list-group mb-2">
+          <li class="list-group-item d-flex justify-content-between align-items-center" v-for="(item, index) in cart" :key="item.productId">
+            <div class="d-flex align-items-center">
+              <span>{{ item.productName }} x </span>
+              <span class="mx-2">{{ item.quantity }}</span>
+            </div>
+            <div class="d-flex align-items-center">
+              <span class="me-2">${{ item.price * item.quantity }}</span>
+              <button class="btn btn-sm btn-danger" @click="removeFromCart(index)">X</button>
+            </div>
+          </li>
+        </ul>
+        <div class="mb-2">總金額: ${{ totalPrice }}</div>
+        <button class="btn btn-primary w-100" @click="checkout" :disabled="cart.length===0">建立訂單</button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="message" class="alert mt-3" :class="messageType==='success'?'alert-success':'alert-danger'">
+    {{ message }}
+  </div>
+</div>
+
+<script type="module">
+import { createApp, ref, computed, onMounted } from 'https://unpkg.com/vue@3.3.4/dist/vue.esm-browser.js';
+
+createApp({
+  setup(){
+    const user = ref(JSON.parse(localStorage.getItem('user')));
+    if(!user.value){ window.location.replace('login.html'); }
+
+    const products = ref([]);
+    const cart = ref([]);
+    const message = ref('');
+    const messageType = ref('success');
+
+    const fetchProducts = async ()=>{
+      try{
+        const res = await fetch('http://localhost:8080/api/product/available');
+        if(!res.ok) throw new Error('API error');
+        const data = await res.json();
+
+        products.value = data.map(p=>({
+          ...p,
+          buyQty: 0
+        }));
+      }catch(e){
+        message.value = '讀取商品失敗';
+        messageType.value = 'danger';
+        console.error(e);
+      }
+    };
+
+    const addToCart = (p)=>{
+      const exist = cart.value.find(c=>c.productId===p.productId);
+      if(exist){
+        exist.quantity += p.buyQty;
+      }else{
+        cart.value.push({productId:p.productId, productName:p.productName, price:p.price, quantity:p.buyQty});
+      }
+      p.quantity -= p.buyQty;
+      p.buyQty = 0;
+    };
+
+    const getProductStock = (productId) => {
+      const p = products.value.find(p=>p.productId===productId);
+      return p ? p.quantity : 0;
+    };
+
+    const removeFromCart = (index) => {
+      const item = cart.value[index];
+      const prod = products.value.find(p => p.productId===item.productId);
+      if(prod) prod.quantity += item.quantity; // 回補庫存
+      cart.value.splice(index,1);
+    };
+
+    const updateCart = (item) => {
+      const prod = products.value.find(p => p.productId===item.productId);
+      if(!prod) return;
+      // 防止超過總庫存
+      if(item.quantity > item.quantity + prod.quantity){
+        item.quantity = item.quantity + prod.quantity;
+      }
+      prod.quantity = prod.quantity + (item._oldQty || item.quantity) - item.quantity;
+      item._oldQty = item.quantity;
+    };
+
+    const totalPrice = computed(()=>cart.value.reduce((sum,i)=>sum+i.price*i.quantity,0));
+
+    const checkout = async () => {
+  message.value = '';
+  try {
+    if(cart.value.length === 0){
+      message.value = '購物車沒有商品';
+      messageType.value = 'danger';
+      return;
+    }
+
+    // 生成訂單編號
+    const orderId = `O${Date.now()}`;
+
+    // 建立訂單資料
+    const order = {
+      orderId: orderId,
+      memberId: user.value.id || 1,
+      price: totalPrice.value,
+      payStatus: true
+    };
+
+    // 建立訂單 API
+    let res1 = await fetch('http://localhost:8080/api/order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(order)
+    });
+    if(!res1.ok) throw new Error(await res1.text());
+
+    // 建立訂單明細
+    const orderItems = cart.value.map((c, idx) => ({
+      orderItemSN: idx + 1,
+      orderId: orderId,
+      productId: c.productId,
+      quantity: c.quantity,
+      price: c.price,
+      orderPrice: c.price * c.quantity
+    }));
+
+    for(let item of orderItems){
+      let res2 = await fetch('http://localhost:8080/api/orderdetail', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(item)
+      });
+      if(!res2.ok) throw new Error(await res2.text());
+    }
+
+    // 存購物車到 localStorage (給訂單頁使用)
+    localStorage.setItem('cart', JSON.stringify(cart.value));
+
+    // 清空購物車
+    cart.value = [];
+
+    // 跳轉到訂單頁
+    window.location.href = 'order.html';
+
+  } catch(e) {
+    message.value = '建立訂單失敗: ' + e.message;
+    messageType.value = 'danger';
+      }
+    };
+
+    const logout = ()=>{
+      localStorage.removeItem('user');
+      window.location.replace('login.html');
+    };
+
+    onMounted(fetchProducts);
+
+    return {user, products, cart, message, messageType, addToCart, totalPrice, checkout, logout, getProductStock, removeFromCart, updateCart};
+  }
+}).mount('#app');
+</script>
+
+</body>
+</html>
